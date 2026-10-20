@@ -1,8 +1,10 @@
 """MiniMax defaults and overrides through the real SDK HTTP serialization boundary."""
 
 import json
+from contextlib import ExitStack
+from functools import partial
+from importlib import import_module
 
-import httpx
 import pytest
 
 from skill_seekers.cli.adaptors import get_adaptor
@@ -26,7 +28,7 @@ def requests_sent(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     captured = []
 
-    def handle(request):
+    def handle(request, http_module):
         body = json.loads(request.read())
         captured.append((request.url, body))
         if request.url.path.endswith("/messages"):
@@ -62,20 +64,30 @@ def requests_sent(monkeypatch):
                 ],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             }
-        return httpx.Response(200, json=payload)
+        return http_module.Response(200, json=payload)
 
     import anthropic
     import openai
 
-    # Supply the SDK's supported HTTP client explicitly: newer SDK releases may
-    # select a non-httpx default transport. Keep real SDK request serialization.
-    from functools import partial
-
-    with httpx.Client(transport=httpx.MockTransport(handle)) as http_client:
-        monkeypatch.setattr(
-            anthropic, "Anthropic", partial(anthropic.Anthropic, http_client=http_client)
-        )
-        monkeypatch.setattr(openai, "OpenAI", partial(openai.OpenAI, http_client=http_client))
+    # New Anthropic SDKs use httpx2; the frozen SDK uses httpx. Derive the
+    # transport from the SDK's public default client, never its network default.
+    with ExitStack() as stack:
+        for sdk, constructor in ((anthropic, "Anthropic"), (openai, "OpenAI")):
+            http_module = import_module(
+                next(
+                    cls.__module__.split(".")[0]
+                    for cls in sdk.DefaultHttpxClient.__mro__
+                    if cls.__module__.split(".")[0] in {"httpx", "httpx2"}
+                )
+            )
+            http_client = stack.enter_context(
+                sdk.DefaultHttpxClient(
+                    transport=http_module.MockTransport(partial(handle, http_module=http_module))
+                )
+            )
+            monkeypatch.setattr(
+                sdk, constructor, partial(getattr(sdk, constructor), http_client=http_client)
+            )
         yield captured
 
 
