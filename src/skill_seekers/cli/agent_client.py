@@ -168,6 +168,7 @@ API_PROVIDERS: tuple[dict[str, Any], ...] = (
         "thinking_protocols": ("openai", "anthropic"),
         "model_thinking_modes": {"MiniMax-M3.1-Flash": ("adaptive",)},
         "media_default_model": MINIMAX_IMAGE_MODEL,
+        "temperature_in_extra_body": True,
     },
 )
 
@@ -837,7 +838,12 @@ class AgentClient:
                 if system is not None:
                     kwargs["system"] = system
                 if temperature is not None:
-                    kwargs["temperature"] = temperature
+                    if meta.get("temperature_in_extra_body"):
+                        # MiniMax accepts this field even when newer Anthropic
+                        # SDKs omit it from their typed Messages.create options.
+                        kwargs.setdefault("extra_body", {})["temperature"] = temperature
+                    else:
+                        kwargs["temperature"] = temperature
                 anthropic_content: str | list[dict[str, Any]] = prompt
                 if image:
                     media_type, image_data = image

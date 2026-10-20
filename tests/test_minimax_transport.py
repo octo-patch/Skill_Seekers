@@ -26,7 +26,7 @@ def requests_sent(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     captured = []
 
-    def handle(_transport, request):
+    def handle(request):
         body = json.loads(request.read())
         captured.append((request.url, body))
         if request.url.path.endswith("/messages"):
@@ -64,8 +64,19 @@ def requests_sent(monkeypatch):
             }
         return httpx.Response(200, json=payload)
 
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
-    return captured
+    import anthropic
+    import openai
+
+    # Supply the SDK's supported HTTP client explicitly: newer SDK releases may
+    # select a non-httpx default transport. Keep real SDK request serialization.
+    from functools import partial
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http_client:
+        monkeypatch.setattr(
+            anthropic, "Anthropic", partial(anthropic.Anthropic, http_client=http_client)
+        )
+        monkeypatch.setattr(openai, "OpenAI", partial(openai.OpenAI, http_client=http_client))
+        yield captured
 
 
 def assert_route(url, region, protocol):
